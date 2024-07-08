@@ -120,6 +120,8 @@ class Div_model(nn.Module):
         self.enc = enc                      # Source encoder
         self.dec = dec                      # Source decoder
 
+        self.complex_pow = args.JSCC_complex_sig
+
     def my_split(self, sig):
         # split the tensor (B, L) to (B, L/2, 2)
         B = sig.shape[0]

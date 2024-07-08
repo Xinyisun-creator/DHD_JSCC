@@ -65,6 +65,14 @@ def reactive_params(nets):
     for p in nets:
         p.requires_grad = True
 
+def save_tensor_as_image(tensor, filename):
+    # Convert tensor to PIL image
+    transform = transforms.ToPILImage()
+    img = transform(tensor.cpu())
+    
+    # Save image
+    img.save(filename)
+
 def save_nets(job_name, nets, epoch):
     path = '{}/{}.pth'.format('models', job_name)
 
@@ -77,6 +85,17 @@ def save_nets(job_name, nets, epoch):
         'epoch': epoch
     }, path)
 
+def load_nets(path, nets):
+    if os.path.exists(path):
+        checkpoint = torch.load(path)
+        nets.load_state_dict(checkpoint['jscc_model'])
+        epoch = checkpoint['epoch']
+        print(f"Loaded checkpoint from epoch {epoch}")
+    else:
+        print(f"No checkpoint found at {path}")
+        epoch = 0
+    
+    return epoch
 
 def load_weights(job_name, nets, path = None):
     if path == None:

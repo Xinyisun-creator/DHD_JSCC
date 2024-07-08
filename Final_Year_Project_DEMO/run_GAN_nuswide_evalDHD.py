@@ -6,7 +6,7 @@ from tqdm import tqdm
 import torch.optim as optim
 import torch.optim.lr_scheduler as LS
 
-from JSCC_get_args import get_args
+from JSCC_get_args import *
 from JSCC_modules import *
 from dataset import CIFAR10, ImageNet, Kodak
 from JSCC_utils import *
@@ -26,70 +26,11 @@ import json
 #   Parser for Discriminator
 #########
 
-def get_args_parser():
-    parser = argparse.ArgumentParser()
-
-    ### Arguments for DHD (Discriminator)
-    parser.add_argument('--DHD_gpu_id', default="0", type=str, help="""Define GPU id.""")
-    parser.add_argument('--DHD_data_dir', default="/datasets", type=str, help="""Path to dataset.""")
-    parser.add_argument('--DHD_dataset', default="nuswide", type=str, help="""Dataset name: imagenet, nuswide_m, coco.""")
-    
-    parser.add_argument('--DHD_batch_size', default=64, type=int, help="""Training mini-batch size.""")
-    parser.add_argument('--DHD_num_workers', default=12, type=int, help="""Number of data loading workers per GPU.""")
-    parser.add_argument('--DHD_encoder', default="AlexNet", type=str, help="""Encoder network: ResNet, AlexNet, ViT, DeiT, SwinT.""")
-    parser.add_argument('--DHD_N_bits', default=64, type=int, help="""Number of bits to retrieval.""")
-    parser.add_argument('--DHD_init_lr', default=3e-4, type=float, help="""Initial learning rate.""")
-    parser.add_argument('--DHD_warm_up', default=10, type=int, help="""Learning rate warm-up end.""")
-    parser.add_argument('--DHD_lambda1', default=0.1, type=float, help="""Balancing hyper-paramter on self knowledge distillation.""")
-    parser.add_argument('--DHD_lambda2', default=0.1, type=float, help="""Balancing hyper-paramter on bce quantization.""")
-    parser.add_argument('--DHD_std', default=0.5, type=float, help="""Gaussian estimator standrad deviation.""")
-    parser.add_argument('--DHD_temp', default=0.2, type=float, help="""Temperature scaling parameter on hash proxy loss.""")
-    parser.add_argument('--DHD_transformation_scale', default=0.2, type=float, help="""Transformation scaling for self teacher: AlexNet=0.2, else=0.5.""")
-
-    parser.add_argument('--DHD_max_epoch', default=500, type=int, help="""Number of epochs to train.""")
-    parser.add_argument('--DHD_eval_epoch', default=1, type=int, help="""Compute mAP for Every N-th epoch.""")
-    parser.add_argument('--DHD_eval_init', default=1, type=int, help="""Compute mAP after N-th epoch.""")
-    parser.add_argument('--DHD_output_dir', default=".", type=str, help="""Path to save logs and checkpoints.""")
-
-    ### Arguments for JSCC (Generator)
-    parser.add_argument('-JSCC_dataset', default  = 'cifar')
-
-    # Neural Network setting
-    parser.add_argument('-JSCC_cout', type=int, default  = 12)
-    parser.add_argument('-JSCC_cfeat', type=int, default  = 256)
-
-    # The transmitter setting
-    parser.add_argument('-JSCC_distribute', default  = False)
-    parser.add_argument('-JSCC_res', default  = True)
-    parser.add_argument('-JSCC_diversity', default  = True)
-    parser.add_argument('-JSCC_adapt', default  = True)
-    parser.add_argument('-JSCC_Nt',  default  = 2)
-    parser.add_argument('-JSCC_P1',  default  = 10.0)
-    parser.add_argument('-JSCC_P2',  default  = 10.0)
-    parser.add_argument('-JSCC_P1_rng',  default  = 4.0)
-    parser.add_argument('-JSCC_P2_rng',  default  = 4.0)
-
-    # The receiver setting
-    parser.add_argument('-JSCC_Nr',  default  = 2)
-
-    # training setting
-    parser.add_argument('-JSCC_epoch', type=int, default  = 400)
-    parser.add_argument('-JSCC_lr', type=float, default  = 1e-4)
-    parser.add_argument('-JSCC_train_patience', type=int, default  = 12)
-    parser.add_argument('-JSCC_train_batch_size', type=int, default  = 64)
-
-    parser.add_argument('-JSCC_val_batch_size', type=int, default  = 32)
-    parser.add_argument('-JSCC_resume', default  = False)
-    parser.add_argument('-JSCC_path', default  = 'models/')
-
-    args = parser.parse_args()
-
-    return args
-
 
 #########
 #           Parameter Setting
 #########
+train_DHD = True
 
 dname = 'nuswide'
 path = './datasets/'
@@ -178,8 +119,13 @@ def get_discriminator(args):
 ###########
 #           JSCC model Class Config (Generator)
 ###########
+def save_checkpoint(state, is_best, output_dir, filename):
+    """Save checkpoint if a new best is achieved"""
+    if is_best:
+        T.save(state, os.path.join(output_dir, filename))  # save checkpoint
+        print("=> Saving a new best model")
 
-def get_generator(jscc_args, job_name):
+def get_generator(jscc_args, job_name,checkpoint_path):
     if jscc_args.JSCC_diversity:
         enc = EncoderCell(c_in=3, c_feat=jscc_args.JSCC_cfeat, c_out=jscc_args.JSCC_cout, attn=jscc_args.JSCC_adapt).to(jscc_args.device)
         dec = DecoderCell(c_in=jscc_args.JSCC_cout, c_feat=jscc_args.JSCC_cfeat, c_out=3, attn=jscc_args.JSCC_adapt).to(jscc_args.device)
@@ -197,13 +143,16 @@ def get_generator(jscc_args, job_name):
         load_weights(job_name, jscc_model)
 
     jscc_model = nn.DataParallel(jscc_model)  # Add this line to wrap model for DataParallel
+    if checkpoint_path != None:
+        # checkpoint_path = './models/train_JSCC_model_with_nuswide.pth'
+        epoch = load_nets(checkpoint_path, jscc_model)
     return jscc_model
 
 
-def train_gan(discriminator_args, generator_args, job_name):
+def train_gan(discriminator_args, generator_args, job_name,checkpoint_path):
     os.environ["CUDA_VISIBLE_DEVICES"] = discriminator_args.DHD_gpu_id
     discriminator, H = get_discriminator(discriminator_args)
-    generator = get_generator(generator_args, job_name)
+    generator = get_generator(generator_args, job_name,checkpoint_path)
     
     # Optimizers
     d_optimizer = torch.optim.Adam(discriminator.parameters(), lr=discriminator_args.DHD_init_lr, weight_decay=10e-6)
@@ -250,31 +199,37 @@ def train_gan(discriminator_args, generator_args, job_name):
 
         for i, data in enumerate(train_loader):
             inputs, labels = data[0].to(device), data[1].to(device)
+            if train_DHD == False:
+                discriminator.eval()
+            else:
+                discriminator.train()
+            # with torch.no_grad():
+            # Train Discriminator
+            fake_inputs = generator(inputs, is_train=False).detach()  # detach to prevent gradients from flowing back to the generator
 
-            discriminator.eval()
-            with torch.no_grad():
-                # Train Discriminator
-                fake_inputs = generator(inputs, is_train=False).detach()  # detach to prevent gradients from flowing back to the generator
+            l1 = torch.tensor(0., device=device)
+            l2 = torch.tensor(0., device=device)
+            l3 = torch.tensor(0., device=device)
 
-                l1 = torch.tensor(0., device=device)
-                l2 = torch.tensor(0., device=device)
-                l3 = torch.tensor(0., device=device)
+            Is = Norm(Crop(fake_inputs))
+            It = Norm(Crop(inputs))
 
-                Is = Norm(Crop(fake_inputs))
-                It = Norm(Crop(inputs))
+            Xt = discriminator(It)
+            l1 = HP_criterion(Xt, H.P, labels)
 
-                Xt = discriminator(It)
-                l1 = HP_criterion(Xt, H.P, labels)
+            Xs = discriminator(Is)
+            l2 = HD_criterion(Xs, Xt) 
+            l3 = REG_criterion(Xt) 
 
-                Xs = discriminator(Is)
-                l2 = HD_criterion(Xs, Xt) 
-                l3 = REG_criterion(Xt) 
-
+            if train_DHD:
                 d_loss = l1 + l2 + l3
+                d_optimizer.zero_grad()
+                d_loss.backward(retain_graph=True)  # Retain graph to allow second backward pass
+                d_optimizer.step()
 
-                C_loss += l1.item()
-                S_loss += l2.item()
-                R_loss += l3.item()
+            C_loss += l1.item()
+            S_loss += l2.item()
+            R_loss += l3.item()
 
             # Train Generator
             if i % n_critic == 0:
@@ -294,12 +249,19 @@ def train_gan(discriminator_args, generator_args, job_name):
 
         g_scheduler.step()
 
-        # if (epoch + 1) % discriminator_args.DHD_eval_epoch == 0 and (epoch + 1) >= discriminator_args.DHD_eval_init:
-        #     mAP = DoRetrieval(device, discriminator.eval(), "./datasets/nuswide256", "./datasets/nuswide_DB.txt", "./datasets/nuswide_Query.txt", num_classes, 5000, discriminator_args)
-        #     mAP_value = mAP.item()  # convert tensor to a Python number
-        #     if mAP_value > MAX_mAP:
-        #         MAX_mAP = mAP_value
-        #     print("mAP: ", mAP_value, "MAX mAP: ", MAX_mAP)
+        if (epoch + 1) % discriminator_args.DHD_eval_epoch == 0 and (epoch + 1) >= discriminator_args.DHD_eval_init and train_DHD == True:
+            mAP = DoRetrieval(device, discriminator.eval(), "./datasets/nuswide256", "./datasets/nuswide_DB.txt", "./datasets/nuswide_Query.txt", num_classes, 5000, discriminator_args)
+            mAP_value = mAP.item()  # convert tensor to a Python number
+            if mAP_value > MAX_mAP:
+                MAX_mAP = mAP_value
+                save_checkpoint({
+                'epoch': epoch + 1,
+                'state_dict': discriminator.state_dict(),
+                'best_mAP': MAX_mAP,
+                'optimizer': d_optimizer.state_dict(),
+                }, True, generator_args.DHD_output_dir, filename=job_name+".pth.tar")
+                print("SAVE THE BEST CHECKPOINT of DHD")
+            print("mAP: ", mAP_value, "MAX mAP: ", MAX_mAP)
 
         # Save evaluation results in every epoch
         evaluation_metrics.append({
@@ -308,7 +270,7 @@ def train_gan(discriminator_args, generator_args, job_name):
             'PSNR': valid_aux['psnr'], 
             'SSIM': valid_aux['ssim'],
             'DHD_MAXmap': MAX_mAP,
-            # 'mAP': mAP_value,
+            'mAP': mAP_value,
             "HD_loss":HD_loss.item()
         })
 
@@ -331,25 +293,14 @@ def train_gan(discriminator_args, generator_args, job_name):
                 g_scheduler.step()
                 print('lr updated: {:.5f}'.format(g_scheduler.get_last_lr()[0]))
 
-    print('evaluating...')
-    print(job_name)
-
-    final_evaluation_metrics = []
-
-    # for P in range(6, 16, 2):
-    #     generator.P1, generator.P2 = P, P
-    #     _, eval_aux = validate_epoch(discriminator_args, eval_loader, generator)
-    #     print(eval_aux['psnr'])
-    #     print(eval_aux['ssim'])
-        
-    #     final_evaluation_metrics.append({
-    #         'psnr': eval_aux['psnr'],
-    #         'ssim': eval_aux['ssim'],
-    #     })
-
-    # with open(evaluation_json_filename, 'w') as f:
-    #     json.dump(final_evaluation_metrics, f, indent=4)
-
+    # Save final epoch checkpoint
+    save_checkpoint({
+        'epoch': epoch + 1,
+        'state_dict': discriminator.state_dict(),
+        'best_mAP': MAX_mAP,
+        'optimizer': d_optimizer.state_dict(),
+        }, True, generator_args.DHD_output_dir, filename=job_name+"_last_epoch.pth.tar")
+    print("SAVE FINAL EPOCH CHECKPOINT of DHD")
 
 def validate_epoch(args, loader, model):
 
@@ -415,6 +366,10 @@ def validate_epoch(args, loader, model):
     return loss_mean, return_aux
 
 if __name__ == '__main__':
-    job_name = 'JSCC_model'
+    job_name = 'TRAINboth_JSCC(tarined_withfixedDHD)_and_DHD_0627'
     args1 = args
-    train_gan(args, args1, job_name)
+    # evaluate_JSCC_path1 = './models/train_JSCC_model_with_nuswide.pth'
+    evaluate_JSCC_path2 = './models/JSCC_model_DEMO_test_study_with_DHD.pth'
+    distance1 = train_gan(args, args1, job_name,evaluate_JSCC_path2)
+    # distance2 = evaluate_gan(args, args1, job_name,evaluate_JSCC_path2)
+    # plot_hash_distances(distance1, distance2)
