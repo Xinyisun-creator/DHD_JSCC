@@ -1,0 +1,4 @@
+torch==1.13.1
+torchvision==0.14.1
+kornia==0.5.7
+timm==0.4.12
